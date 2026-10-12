@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"reflect"
 	"regexp"
 	"slices"
@@ -36,11 +37,12 @@ import (
 	"github.com/microscaler/crossplane-gcp-application-observability/internal/gcprest"
 )
 
-const (
+const errNotWR = "managed resource is not a WorkloadRegistration"
+
+// API endpoints; variables so tests can point them at a fake server.
+var (
 	apphubAPI = "https://apphub.googleapis.com/v1"
 	crmAPI    = "https://cloudresourcemanager.googleapis.com/v3"
-
-	errNotWR = "managed resource is not a WorkloadRegistration"
 )
 
 var (
@@ -112,7 +114,14 @@ func (w workload) id() string { return w.Name[strings.LastIndex(w.Name, "/")+1:]
 
 type selected struct {
 	discovered, ns, name, kind string
+	// key is the discovered workload's ID (the last segment of its name). App Hub names the same discovered
+	// workload with the project ID when listing discovered workloads and with the project number in a registered
+	// workload's discoveredWorkload, so full names never match; the ID does.
+	key string
 }
+
+// discoveredKey returns the ID of a discovered workload name in either form.
+func discoveredKey(name string) string { return path.Base(name) }
 
 type plan struct {
 	selected   []selected
@@ -182,7 +191,7 @@ func (e *external) plan(ctx context.Context, cr *v1alpha1.WorkloadRegistration) 
 			slices.Contains(p.Exclude, name) || (clusterProjects != nil && !slices.Contains(clusterProjects, project)) {
 			return nil
 		}
-		pl.selected = append(pl.selected, selected{discovered: dw.Name, ns: ns, name: name, kind: kind})
+		pl.selected = append(pl.selected, selected{discovered: dw.Name, key: discoveredKey(dw.Name), ns: ns, name: name, kind: kind})
 		return nil
 	})
 	if err != nil {
@@ -195,7 +204,7 @@ func (e *external) plan(ctx context.Context, cr *v1alpha1.WorkloadRegistration) 
 		if err := json.Unmarshal(raw, &w); err != nil {
 			return err
 		}
-		byDiscovered[w.DiscoveredWorkload] = w
+		byDiscovered[discoveredKey(w.DiscoveredWorkload)] = w
 		switch {
 		case w.Description == pl.marker:
 		case slices.Contains(p.AdoptDescriptions, w.Description):
@@ -212,8 +221,8 @@ func (e *external) plan(ctx context.Context, cr *v1alpha1.WorkloadRegistration) 
 
 	isSelected := map[string]bool{}
 	for _, s := range pl.selected {
-		isSelected[s.discovered] = true
-		w, ok := byDiscovered[s.discovered]
+		isSelected[s.key] = true
+		w, ok := byDiscovered[s.key]
 		switch {
 		case !ok:
 			pl.register = append(pl.register, s)
@@ -223,7 +232,9 @@ func (e *external) plan(ctx context.Context, cr *v1alpha1.WorkloadRegistration) 
 	}
 	for _, w := range pl.owned {
 		switch {
-		case w.State == "DETACHED" || !isSelected[w.DiscoveredWorkload]:
+		// An empty selection removes only detached registrations: a discovery listing that comes back empty
+		// (API hiccup, cluster briefly unreported) must never deregister an application wholesale.
+		case w.State == "DETACHED" || (len(pl.selected) > 0 && !isSelected[discoveredKey(w.DiscoveredWorkload)]):
 			pl.remove = append(pl.remove, w)
 		case pl.attributes != nil && !sameAttributes(w.Attributes, pl.attributes):
 			pl.drifted = append(pl.drifted, w)
