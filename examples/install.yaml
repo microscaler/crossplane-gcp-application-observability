@@ -1,0 +1,6 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-gcpobservability
+spec:
+  package: xpkg.crossplane.io/microscaler/provider-gcpobservability:v0.1.0
