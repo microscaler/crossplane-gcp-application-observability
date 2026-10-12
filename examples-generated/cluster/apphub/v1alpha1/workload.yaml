@@ -1,0 +1,44 @@
+apiVersion: apphub.gcpobservability.microscaler.io/v1alpha1
+kind: Workload
+metadata:
+  annotations:
+    meta.upbound.io/example-id: apphub/v1alpha1/workload
+  labels:
+    testing.upbound.io/example-name: example
+  name: example
+spec:
+  forProvider:
+    applicationIdSelector:
+      matchLabels:
+        testing.upbound.io/example-name: application
+    discoveredWorkload: ${data.google_apphub_discovered_workload.catalog-workload.name}
+    location: us-central1
+
+---
+
+apiVersion: apphub.gcpobservability.microscaler.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    meta.upbound.io/example-id: apphub/v1alpha1/workload
+  labels:
+    testing.upbound.io/example-name: application
+  name: application
+spec:
+  forProvider:
+    location: us-central1
+    scope:
+    - type: REGIONAL
+
+---
+
+apiVersion: apphub.gcpobservability.microscaler.io/v1alpha1
+kind: ServiceProjectAttachment
+metadata:
+  annotations:
+    meta.upbound.io/example-id: apphub/v1alpha1/workload
+  labels:
+    testing.upbound.io/example-name: service_project_attachment
+  name: service-project-attachment
+spec:
+  forProvider: {}

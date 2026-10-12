@@ -1,0 +1,11 @@
+apiVersion: apphub.gcpobservability.m.microscaler.io/v1alpha1
+kind: ServiceProjectAttachment
+metadata:
+  annotations:
+    meta.upbound.io/example-id: apphub/v1alpha1/serviceprojectattachment
+  labels:
+    testing.upbound.io/example-name: example
+  name: example
+  namespace: crossplane-system
+spec:
+  forProvider: {}

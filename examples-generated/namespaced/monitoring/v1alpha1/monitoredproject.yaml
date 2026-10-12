@@ -1,0 +1,12 @@
+apiVersion: monitoring.gcpobservability.m.microscaler.io/v1alpha1
+kind: MonitoredProject
+metadata:
+  annotations:
+    meta.upbound.io/example-id: monitoring/v1alpha1/monitoredproject
+  labels:
+    testing.upbound.io/example-name: primary
+  name: primary
+  namespace: crossplane-system
+spec:
+  forProvider:
+    metricsScope: my-project-name

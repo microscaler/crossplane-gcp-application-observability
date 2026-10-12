@@ -46,6 +46,7 @@ import (
 	controllerCluster "github.com/microscaler/crossplane-gcp-application-observability/internal/controller/cluster"
 	controllerNamespaced "github.com/microscaler/crossplane-gcp-application-observability/internal/controller/namespaced"
 	"github.com/microscaler/crossplane-gcp-application-observability/internal/features"
+	controllerNative "github.com/microscaler/crossplane-gcp-application-observability/internal/controller/native"
 	"github.com/microscaler/crossplane-gcp-application-observability/internal/version"
 )
 
@@ -264,6 +265,7 @@ func main() {
 		kingpin.FatalIfError(controllerNamespaced.Setup(mgr, namespacedOpts), "Cannot setup namespaced GCPObservability controllers")
 	}
 
+	kingpin.FatalIfError(controllerNative.Setup(mgr, clusterOpts), "Cannot setup hand-written GCPObservability controllers")
 	kingpin.FatalIfError(mgr.Start(ctrl.SetupSignalHandler()), "Cannot start controller manager")
 }
 

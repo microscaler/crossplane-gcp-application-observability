@@ -1,0 +1,15 @@
+apiVersion: observability.gcpobservability.microscaler.io/v1alpha1
+kind: TraceScope
+metadata:
+  annotations:
+    meta.upbound.io/example-id: observability/v1alpha1/tracescope
+  labels:
+    testing.upbound.io/example-name: observability_trace_scope
+  name: observability-trace-scope
+spec:
+  forProvider:
+    description: A trace scope configured with Terraform
+    location: global
+    resourceNames:
+    - projects/${data.google_project.project.project_id}
+    - projects/${google_project.project-2.project_id}

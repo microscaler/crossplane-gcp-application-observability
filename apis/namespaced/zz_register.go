@@ -10,7 +10,10 @@ package namespaced
 import (
 	"k8s.io/apimachinery/pkg/runtime"
 
-	v1alpha1 "github.com/microscaler/crossplane-gcp-application-observability/apis/namespaced/null/v1alpha1"
+	v1alpha1 "github.com/microscaler/crossplane-gcp-application-observability/apis/namespaced/apphub/v1alpha1"
+	v1alpha1logging "github.com/microscaler/crossplane-gcp-application-observability/apis/namespaced/logging/v1alpha1"
+	v1alpha1monitoring "github.com/microscaler/crossplane-gcp-application-observability/apis/namespaced/monitoring/v1alpha1"
+	v1alpha1observability "github.com/microscaler/crossplane-gcp-application-observability/apis/namespaced/observability/v1alpha1"
 	v1alpha1namespaced "github.com/microscaler/crossplane-gcp-application-observability/apis/namespaced/v1alpha1"
 	v1beta1 "github.com/microscaler/crossplane-gcp-application-observability/apis/namespaced/v1beta1"
 )
@@ -19,6 +22,9 @@ func init() {
 	// Register the types with the Scheme so the components can map objects to GroupVersionKinds and back
 	AddToSchemes = append(AddToSchemes,
 		v1alpha1.SchemeBuilder.AddToScheme,
+		v1alpha1logging.SchemeBuilder.AddToScheme,
+		v1alpha1monitoring.SchemeBuilder.AddToScheme,
+		v1alpha1observability.SchemeBuilder.AddToScheme,
 		v1alpha1namespaced.SchemeBuilder.AddToScheme,
 		v1beta1.SchemeBuilder.AddToScheme,
 	)

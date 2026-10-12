@@ -1,0 +1,14 @@
+apiVersion: apphub.gcpobservability.m.microscaler.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    meta.upbound.io/example-id: apphub/v1alpha1/application
+  labels:
+    testing.upbound.io/example-name: example
+  name: example
+  namespace: crossplane-system
+spec:
+  forProvider:
+    location: us-east1
+    scope:
+    - type: REGIONAL
