@@ -16,7 +16,7 @@ export TERRAFORM_PROVIDER_VERSION ?= 8.6.0
 export TERRAFORM_PROVIDER_DOWNLOAD_NAME ?= terraform-provider-google
 export TERRAFORM_PROVIDER_DOWNLOAD_URL_PREFIX ?= https://releases.hashicorp.com/$(TERRAFORM_PROVIDER_DOWNLOAD_NAME)/$(TERRAFORM_PROVIDER_VERSION)
 export TERRAFORM_NATIVE_PROVIDER_BINARY ?= terraform-provider-null_v3.2.4_x5
-export TERRAFORM_DOCS_PATH ?= docs/resources
+export TERRAFORM_DOCS_PATH ?= website/docs/r
 
 
 PLATFORMS ?= linux_amd64 linux_arm64
