@@ -235,30 +235,37 @@ func (e *external) plan(ctx context.Context, cr *v1alpha1.WorkloadRegistration) 
 	return pl, nil
 }
 
+// matchRegistered applies the selector to a registered workload. One without a reference counts as matched, so a
+// registration is never removed on missing data.
+func (s selector) matchRegistered(w workload) (selected, bool) {
+	if w.WorkloadReference.URI == "" {
+		return selected{name: w.id()}, true
+	}
+	return s.match(w.gkeRef)
+}
+
 // classify sorts one registered workload of the application into the plan.
 func (pl *plan) classify(w workload, sel selector, adoptDescriptions []string) {
 	adopted := slices.Contains(adoptDescriptions, w.Description)
-	owned := w.Description == pl.marker || adopted
-	s, matched := sel.match(w.gkeRef)
-	if w.WorkloadReference.URI == "" {
-		matched = true // no reference to judge by: never remove on missing data
-	}
-	switch {
-	case !owned && matched:
-		pl.selected++
-		pl.conflicts = append(pl.conflicts, fmt.Sprintf("%s/%s registered as %s by another owner", s.ns, s.name, w.id()))
-	case !owned:
-	case w.State == "DETACHED" || !matched:
-		pl.owned = append(pl.owned, w)
-		pl.remove = append(pl.remove, w)
-	default:
-		pl.owned = append(pl.owned, w)
-		pl.selected++
-		if adopted {
-			pl.adopt = append(pl.adopt, w)
-		} else if pl.attributes != nil && !sameAttributes(w.Attributes, pl.attributes) {
-			pl.drifted = append(pl.drifted, w)
+	s, matched := sel.matchRegistered(w)
+	if w.Description != pl.marker && !adopted {
+		if matched {
+			pl.selected++
+			pl.conflicts = append(pl.conflicts, fmt.Sprintf("%s/%s registered as %s by another owner", s.ns, s.name, w.id()))
 		}
+		return
+	}
+	pl.owned = append(pl.owned, w)
+	if w.State == "DETACHED" || !matched {
+		pl.remove = append(pl.remove, w)
+		return
+	}
+	pl.selected++
+	switch {
+	case adopted:
+		pl.adopt = append(pl.adopt, w)
+	case pl.attributes != nil && !sameAttributes(w.Attributes, pl.attributes):
+		pl.drifted = append(pl.drifted, w)
 	}
 }
 
