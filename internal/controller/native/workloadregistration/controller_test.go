@@ -18,7 +18,8 @@ import (
 	"github.com/microscaler/crossplane-gcp-application-observability/internal/gcprest"
 )
 
-// fakeAppHub serves one application with the given discovered and registered workloads.
+// fakeAppHub serves one application. Like App Hub, the discovery listing holds only workloads that are not
+// registered to any application.
 func fakeAppHub(t *testing.T, discovered, registered []map[string]any) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -37,22 +38,29 @@ func fakeAppHub(t *testing.T, discovered, registered []map[string]any) *httptest
 	}))
 }
 
-func dw(id, ns, name string) map[string]any {
+func ref(cluster, ns, kind, name string) (map[string]any, map[string]any) {
+	return map[string]any{"uri": "//container.googleapis.com/projects/123/locations/us-east4/clusters/" + cluster + "/k8s/namespaces/" + ns + "/apps/" + kind + "/" + name},
+		map[string]any{"gcpProject": "projects/svc"}
+}
+
+func discovered(id, ns, name string) map[string]any {
+	r, props := ref("c1", ns, "deployments", name)
 	return map[string]any{
-		// Listed with the project ID...
 		"name":               "projects/host/locations/us-east4/discoveredWorkloads/" + id,
-		"workloadReference":  map[string]any{"uri": "//container.googleapis.com/projects/svc/locations/us-east4/clusters/c1/k8s/namespaces/" + ns + "/apps/deployments/" + name},
-		"workloadProperties": map[string]any{"gcpProject": "projects/123"},
+		"workloadReference":  r,
+		"workloadProperties": props,
 	}
 }
 
-func registeredWorkload(id, wid, description string) map[string]any {
+func registered(ns, name, description, state string) map[string]any {
+	r, props := ref("c1", ns, "deployments", name)
 	return map[string]any{
-		"name": "projects/host/locations/us-east4/applications/app/workloads/" + wid,
-		// ...but referenced with the project number once registered.
-		"discoveredWorkload": "projects/999/locations/us-east4/discoveredWorkloads/" + id,
+		"name":               "projects/host/locations/us-east4/applications/app/workloads/" + ns + "-" + name,
+		"discoveredWorkload": "projects/999/locations/us-east4/discoveredWorkloads/dw-" + name,
 		"description":        description,
-		"state":              "ACTIVE",
+		"state":              state,
+		"workloadReference":  r,
+		"workloadProperties": props,
 	}
 }
 
@@ -66,9 +74,9 @@ func registration() *v1alpha1.WorkloadRegistration {
 	}
 }
 
-func planFor(t *testing.T, discovered, registered []map[string]any) *plan {
+func planFor(t *testing.T, disc, reg []map[string]any) *plan {
 	t.Helper()
-	srv := fakeAppHub(t, discovered, registered)
+	srv := fakeAppHub(t, disc, reg)
 	t.Cleanup(srv.Close)
 	old := apphubAPI
 	apphubAPI = srv.URL
@@ -81,41 +89,58 @@ func planFor(t *testing.T, discovered, registered []map[string]any) *plan {
 	return pl
 }
 
-// Registered workloads name their discovered workload with the project number, the listing with the project ID:
-// they must still match, so nothing is registered twice or removed.
-func TestPlanMatchesAcrossProjectIDAndNumber(t *testing.T) {
-	cr := registration()
-	pl := planFor(t,
-		[]map[string]any{dw("dw-1", "ns1", "web"), dw("dw-2", "ns1", "api")},
-		[]map[string]any{registeredWorkload("dw-1", "ns1-web", marker(cr)), registeredWorkload("dw-2", "ns1-api", "legacy")})
-	if len(pl.register) != 0 || len(pl.remove) != 0 || len(pl.conflicts) != 0 {
-		t.Fatalf("want nothing to register, remove or conflict; got register=%v remove=%v conflicts=%v", pl.register, pl.remove, pl.conflicts)
+// The regression behind v0.1.2: registered workloads are absent from discovery, and must still count as selected.
+func TestRegisteredWorkloadsKeptThoughNotDiscovered(t *testing.T) {
+	m := marker(registration())
+	pl := planFor(t, nil, []map[string]any{
+		registered("ns1", "web", m, "ACTIVE"),
+		registered("ns1", "api", "legacy", "ACTIVE"),
+	})
+	if len(pl.remove) != 0 || len(pl.register) != 0 {
+		t.Fatalf("want nothing removed or registered; got remove=%v register=%v", pl.remove, pl.register)
 	}
-	if len(pl.owned) != 2 || len(pl.adopt) != 1 {
-		t.Fatalf("want 2 owned (1 adopted); got owned=%d adopt=%d", len(pl.owned), len(pl.adopt))
-	}
-}
-
-func TestPlanRegistersNewAndRemovesDeselected(t *testing.T) {
-	cr := registration()
-	pl := planFor(t,
-		[]map[string]any{dw("dw-1", "ns1", "web"), dw("dw-3", "ns1", "new"), dw("dw-4", "other", "skip")},
-		[]map[string]any{registeredWorkload("dw-1", "ns1-web", marker(cr)), registeredWorkload("dw-2", "ns1-gone", marker(cr))})
-	if len(pl.register) != 1 || pl.register[0].name != "new" {
-		t.Fatalf("want ns1/new registered; got %v", pl.register)
-	}
-	if len(pl.remove) != 1 || pl.remove[0].id() != "ns1-gone" {
-		t.Fatalf("want ns1-gone removed; got %v", pl.remove)
+	if pl.selected != 2 || len(pl.owned) != 2 || len(pl.adopt) != 1 {
+		t.Fatalf("want 2 selected and owned, 1 adopted; got selected=%d owned=%d adopt=%d", pl.selected, len(pl.owned), len(pl.adopt))
 	}
 }
 
-// A discovery listing that comes back empty must not deregister everything.
-func TestPlanEmptyDiscoveryRemovesNothing(t *testing.T) {
-	cr := registration()
-	pl := planFor(t, nil,
-		[]map[string]any{registeredWorkload("dw-1", "ns1-web", marker(cr)), registeredWorkload("dw-2", "ns1-api", marker(cr))})
-	if len(pl.remove) != 0 {
-		t.Fatalf("want nothing removed on empty discovery; got %v", pl.remove)
+func TestDiscoveredSelectedWorkloadsAreRegistered(t *testing.T) {
+	pl := planFor(t,
+		[]map[string]any{discovered("dw-new", "ns1", "new"), discovered("dw-other", "other", "skip")},
+		[]map[string]any{registered("ns1", "web", marker(registration()), "ACTIVE")})
+	if len(pl.register) != 1 || pl.register[0].name != "new" || pl.register[0].discovered == "" {
+		t.Fatalf("want ns1/new registered; got %+v", pl.register)
+	}
+	if pl.selected != 2 || len(pl.remove) != 0 {
+		t.Fatalf("want 2 selected, none removed; got selected=%d remove=%v", pl.selected, pl.remove)
+	}
+}
+
+func TestOwnedWorkloadsRemovedWhenDetachedOrDeselected(t *testing.T) {
+	m := marker(registration())
+	pl := planFor(t, nil, []map[string]any{
+		registered("ns1", "gone", m, "DETACHED"),
+		registered("ns2", "moved", m, "ACTIVE"), // ns2 is not in the selector
+		registered("ns1", "kept", m, "ACTIVE"),
+	})
+	if len(pl.remove) != 2 {
+		t.Fatalf("want the detached and the deselected workload removed; got %v", pl.remove)
+	}
+	if pl.selected != 1 {
+		t.Fatalf("want 1 selected; got %d", pl.selected)
+	}
+}
+
+func TestForeignRegistrationsAreReportedNotTouched(t *testing.T) {
+	pl := planFor(t, nil, []map[string]any{
+		registered("ns1", "web", "someone else", "ACTIVE"),
+		registered("ns9", "unrelated", "someone else", "DETACHED"),
+	})
+	if len(pl.remove) != 0 || len(pl.owned) != 0 {
+		t.Fatalf("want foreign registrations left alone; got remove=%v owned=%v", pl.remove, pl.owned)
+	}
+	if len(pl.conflicts) != 1 {
+		t.Fatalf("want one conflict; got %v", pl.conflicts)
 	}
 }
 

@@ -100,8 +100,19 @@ type external struct {
 	project string
 }
 
+// gkeRef is what discovered and registered workloads both carry about the GKE workload behind them.
+type gkeRef struct {
+	WorkloadReference struct {
+		URI string `json:"uri"`
+	} `json:"workloadReference"`
+	WorkloadProperties struct {
+		GCPProject string `json:"gcpProject"`
+	} `json:"workloadProperties"`
+}
+
 // workload is an App Hub registered workload.
 type workload struct {
+	gkeRef
 	Name               string          `json:"name"`
 	DiscoveredWorkload string          `json:"discoveredWorkload"`
 	DisplayName        string          `json:"displayName,omitempty"`
@@ -112,24 +123,39 @@ type workload struct {
 
 func (w workload) id() string { return w.Name[strings.LastIndex(w.Name, "/")+1:] }
 
+// selected is a GKE workload the selector matches.
 type selected struct {
 	discovered, ns, name, kind string
-	// key is the discovered workload's ID (the last segment of its name). App Hub names the same discovered
-	// workload with the project ID when listing discovered workloads and with the project number in a registered
-	// workload's discoveredWorkload, so full names never match; the ID does.
-	key string
 }
 
-// discoveredKey returns the ID of a discovered workload name in either form.
-func discoveredKey(name string) string { return path.Base(name) }
+// selector decides from a workload's own GKE reference whether it belongs to the registration. It is applied to
+// registered and discovered workloads alike: App Hub lists as discovered only workloads not yet registered to any
+// application, so presence in the discovery listing says nothing about whether a registered workload is selected.
+type selector struct {
+	p        v1alpha1.WorkloadRegistrationParameters
+	kinds    []string
+	projects []string // project ID and number of ClusterProject, when set
+}
+
+func (s selector) match(ref gkeRef) (selected, bool) {
+	m := gkeURI.FindStringSubmatch(ref.WorkloadReference.URI)
+	if m == nil {
+		return selected{}, false
+	}
+	cluster, ns, kind, name := m[1], m[2], kinds[m[3]], m[4]
+	project := path.Base(ref.WorkloadProperties.GCPProject)
+	ok := cluster == s.p.Cluster && slices.Contains(s.p.Namespaces, ns) && slices.Contains(s.kinds, kind) &&
+		!slices.Contains(s.p.Exclude, name) && (s.projects == nil || slices.Contains(s.projects, project))
+	return selected{ns: ns, name: name, kind: kind}, ok
+}
 
 type plan struct {
-	selected   []selected
-	register   []selected // selected, not yet registered anywhere in the application
+	selected   int        // workloads the selector matches, registered or not
+	register   []selected // selected discovered workloads, not yet registered
 	owned      []workload // registered by this resource (or adopted)
 	adopt      []workload // owned via an adopt description, still to be re-marked
 	drifted    []workload // owned, attributes differ from the spec
-	remove     []workload // owned, but detached or no longer selected
+	remove     []workload // owned, but detached or no longer matching the selector
 	conflicts  []string
 	attributes map[string]any
 	marker     string
@@ -144,105 +170,96 @@ func (e *external) appURL(cr *v1alpha1.WorkloadRegistration) string {
 	return fmt.Sprintf("%s/projects/%s/locations/%s/applications/%s", apphubAPI, e.project, p.Location, p.ApplicationID)
 }
 
-func (e *external) plan(ctx context.Context, cr *v1alpha1.WorkloadRegistration) (*plan, error) { //nolint:gocyclo // one pass over two lists
+func (e *external) selector(ctx context.Context, p v1alpha1.WorkloadRegistrationParameters) (selector, error) {
+	s := selector{p: p, kinds: p.Kinds}
+	if len(s.kinds) == 0 {
+		s.kinds = []string{"Deployment", "StatefulSet"}
+	}
+	if p.ClusterProject != nil && *p.ClusterProject != "" {
+		var proj struct {
+			Name string `json:"name"`
+		}
+		if err := e.api.Do(ctx, http.MethodGet, crmAPI+"/projects/"+*p.ClusterProject, nil, nil, &proj); err != nil {
+			return s, errors.Wrapf(err, "cannot look up project %s", *p.ClusterProject)
+		}
+		s.projects = []string{*p.ClusterProject, path.Base(proj.Name)}
+	}
+	return s, nil
+}
+
+func (e *external) plan(ctx context.Context, cr *v1alpha1.WorkloadRegistration) (*plan, error) {
 	p := cr.Spec.ForProvider
 	pl := &plan{marker: marker(cr), attributes: attributes(p.Attributes)}
 
 	if err := e.api.Do(ctx, http.MethodGet, e.appURL(cr), nil, nil, nil); err != nil {
 		return nil, errors.Wrapf(err, "cannot get application %s", p.ApplicationID)
 	}
-
-	wantKinds := p.Kinds
-	if len(wantKinds) == 0 {
-		wantKinds = []string{"Deployment", "StatefulSet"}
-	}
-	var clusterProjects []string
-	if p.ClusterProject != nil && *p.ClusterProject != "" {
-		var proj struct {
-			Name string `json:"name"`
-		}
-		if err := e.api.Do(ctx, http.MethodGet, crmAPI+"/projects/"+*p.ClusterProject, nil, nil, &proj); err != nil {
-			return nil, errors.Wrapf(err, "cannot look up project %s", *p.ClusterProject)
-		}
-		clusterProjects = []string{*p.ClusterProject, strings.TrimPrefix(proj.Name, "projects/")}
-	}
-
-	discoveredURL := fmt.Sprintf("%s/projects/%s/locations/%s/discoveredWorkloads", apphubAPI, e.project, p.Location)
-	err := e.api.List(ctx, discoveredURL, url.Values{"pageSize": {"500"}}, "discoveredWorkloads", func(raw json.RawMessage) error {
-		var dw struct {
-			Name              string `json:"name"`
-			WorkloadReference struct {
-				URI string `json:"uri"`
-			} `json:"workloadReference"`
-			WorkloadProperties struct {
-				GCPProject string `json:"gcpProject"`
-			} `json:"workloadProperties"`
-		}
-		if err := json.Unmarshal(raw, &dw); err != nil {
-			return err
-		}
-		m := gkeURI.FindStringSubmatch(dw.WorkloadReference.URI)
-		if m == nil {
-			return nil
-		}
-		cluster, ns, kind, name := m[1], m[2], kinds[m[3]], m[4]
-		project := dw.WorkloadProperties.GCPProject[strings.LastIndex(dw.WorkloadProperties.GCPProject, "/")+1:]
-		if cluster != p.Cluster || !slices.Contains(p.Namespaces, ns) || !slices.Contains(wantKinds, kind) ||
-			slices.Contains(p.Exclude, name) || (clusterProjects != nil && !slices.Contains(clusterProjects, project)) {
-			return nil
-		}
-		pl.selected = append(pl.selected, selected{discovered: dw.Name, key: discoveredKey(dw.Name), ns: ns, name: name, kind: kind})
-		return nil
-	})
+	sel, err := e.selector(ctx, p)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot list discovered workloads")
+		return nil, err
 	}
 
-	byDiscovered := map[string]workload{}
+	// Registered workloads: membership comes from each one's own reference, never from the discovery listing.
 	err = e.api.List(ctx, e.appURL(cr)+"/workloads", nil, "workloads", func(raw json.RawMessage) error {
 		var w workload
 		if err := json.Unmarshal(raw, &w); err != nil {
 			return err
 		}
-		byDiscovered[discoveredKey(w.DiscoveredWorkload)] = w
-		switch {
-		case w.Description == pl.marker:
-		case slices.Contains(p.AdoptDescriptions, w.Description):
-			pl.adopt = append(pl.adopt, w)
-		default:
-			return nil
-		}
-		pl.owned = append(pl.owned, w)
+		pl.classify(w, sel, p.AdoptDescriptions)
 		return nil
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot list application workloads")
 	}
 
-	isSelected := map[string]bool{}
-	for _, s := range pl.selected {
-		isSelected[s.key] = true
-		w, ok := byDiscovered[s.key]
-		switch {
-		case !ok:
-			pl.register = append(pl.register, s)
-		case w.Description != pl.marker && !slices.Contains(p.AdoptDescriptions, w.Description):
-			pl.conflicts = append(pl.conflicts, fmt.Sprintf("%s/%s registered as %s", s.ns, s.name, w.id()))
+	// Discovered workloads are the unregistered ones: register those the selector matches.
+	discoveredURL := fmt.Sprintf("%s/projects/%s/locations/%s/discoveredWorkloads", apphubAPI, e.project, p.Location)
+	err = e.api.List(ctx, discoveredURL, url.Values{"pageSize": {"500"}}, "discoveredWorkloads", func(raw json.RawMessage) error {
+		var dw struct {
+			gkeRef
+			Name string `json:"name"`
 		}
+		if err := json.Unmarshal(raw, &dw); err != nil {
+			return err
+		}
+		if s, ok := sel.match(dw.gkeRef); ok {
+			s.discovered = dw.Name
+			pl.register = append(pl.register, s)
+			pl.selected++
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot list discovered workloads")
 	}
-	for _, w := range pl.owned {
-		switch {
-		// An empty selection removes only detached registrations: a discovery listing that comes back empty
-		// (API hiccup, cluster briefly unreported) must never deregister an application wholesale.
-		case w.State == "DETACHED" || (len(pl.selected) > 0 && !isSelected[discoveredKey(w.DiscoveredWorkload)]):
-			pl.remove = append(pl.remove, w)
-		case pl.attributes != nil && !sameAttributes(w.Attributes, pl.attributes):
+	return pl, nil
+}
+
+// classify sorts one registered workload of the application into the plan.
+func (pl *plan) classify(w workload, sel selector, adoptDescriptions []string) {
+	adopted := slices.Contains(adoptDescriptions, w.Description)
+	owned := w.Description == pl.marker || adopted
+	s, matched := sel.match(w.gkeRef)
+	if w.WorkloadReference.URI == "" {
+		matched = true // no reference to judge by: never remove on missing data
+	}
+	switch {
+	case !owned && matched:
+		pl.selected++
+		pl.conflicts = append(pl.conflicts, fmt.Sprintf("%s/%s registered as %s by another owner", s.ns, s.name, w.id()))
+	case !owned:
+	case w.State == "DETACHED" || !matched:
+		pl.owned = append(pl.owned, w)
+		pl.remove = append(pl.remove, w)
+	default:
+		pl.owned = append(pl.owned, w)
+		pl.selected++
+		if adopted {
+			pl.adopt = append(pl.adopt, w)
+		} else if pl.attributes != nil && !sameAttributes(w.Attributes, pl.attributes) {
 			pl.drifted = append(pl.drifted, w)
 		}
 	}
-	// Registrations owned elsewhere in the application that a selected workload
-	// already uses are reported, not fought over.
-	return pl, nil
 }
 
 func (pl *plan) upToDate() bool {
@@ -275,7 +292,7 @@ func (e *external) Observe(ctx context.Context, mg xpresource.Managed) (managed.
 	sort.Strings(ids)
 	sort.Strings(pl.conflicts)
 	cr.Status.AtProvider = v1alpha1.WorkloadRegistrationObservation{
-		Selected:   len(pl.selected),
+		Selected:   pl.selected,
 		Registered: ids,
 		Conflicts:  pl.conflicts,
 	}
