@@ -55,7 +55,7 @@ func Setup(mgr ctrl.Manager, o tjcontroller.Options) error {
 	opts := []managed.ReconcilerOption{
 		managed.WithExternalConnector(&connector{kube: mgr.GetClient()}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
-		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
+		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))), //nolint:staticcheck // the recorder crossplane-runtime's event package takes
 		managed.WithTimeout(3 * time.Minute),
 		managed.WithPollInterval(o.PollInterval),
 		// The external name is set on first registration, not defaulted from
@@ -298,6 +298,21 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.WorkloadRegistration)
 	if err != nil {
 		return err
 	}
+	errs := e.register(ctx, cr, pl)
+	errs = append(errs, e.remark(ctx, pl)...)
+	for _, w := range pl.remove {
+		if err := e.api.Do(ctx, http.MethodDelete, apphubAPI+"/"+w.Name, nil, nil, nil); err != nil && !gcprest.IsNotFound(err) {
+			errs = append(errs, fmt.Sprintf("remove %s: %v", w.id(), err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// register registers the selected workloads not yet in the application.
+func (e *external) register(ctx context.Context, cr *v1alpha1.WorkloadRegistration, pl *plan) []string {
 	var errs []string
 	for _, s := range pl.register {
 		body := map[string]any{
@@ -313,6 +328,12 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.WorkloadRegistration)
 			errs = append(errs, fmt.Sprintf("register %s/%s: %v", s.ns, s.name, err))
 		}
 	}
+	return errs
+}
+
+// remark takes over adopted registrations and corrects attribute drift.
+func (e *external) remark(ctx context.Context, pl *plan) []string {
+	var errs []string
 	patch := map[string]workload{}
 	for _, w := range pl.adopt {
 		patch[w.Name] = w
@@ -331,15 +352,7 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.WorkloadRegistration)
 			errs = append(errs, fmt.Sprintf("update %s: %v", name, err))
 		}
 	}
-	for _, w := range pl.remove {
-		if err := e.api.Do(ctx, http.MethodDelete, apphubAPI+"/"+w.Name, nil, nil, nil); err != nil && !gcprest.IsNotFound(err) {
-			errs = append(errs, fmt.Sprintf("remove %s: %v", w.id(), err))
-		}
-	}
-	if len(errs) > 0 {
-		return errors.New(strings.Join(errs, "; "))
-	}
-	return nil
+	return errs
 }
 
 func (e *external) Delete(ctx context.Context, mg xpresource.Managed) (managed.ExternalDelete, error) {
@@ -424,9 +437,14 @@ func sameAttributes(have json.RawMessage, want map[string]any) bool {
 			return false
 		}
 	}
-	b, _ := json.Marshal(want)
+	b, err := json.Marshal(want)
+	if err != nil {
+		return false
+	}
 	var w map[string]any
-	_ = json.Unmarshal(b, &w)
+	if err := json.Unmarshal(b, &w); err != nil {
+		return false
+	}
 	for k, v := range w {
 		if !reflect.DeepEqual(normalise(h[k]), normalise(v)) {
 			return false
@@ -448,7 +466,10 @@ func normalise(v any) any {
 	case []any:
 		out := make([]string, 0, len(t))
 		for _, x := range t {
-			b, _ := json.Marshal(normalise(x))
+			b, err := json.Marshal(normalise(x))
+			if err != nil {
+				b = []byte(fmt.Sprint(x))
+			}
 			out = append(out, string(b))
 		}
 		sort.Strings(out)

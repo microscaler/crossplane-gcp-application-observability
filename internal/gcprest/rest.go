@@ -51,23 +51,9 @@ func code(err error) int {
 // Do sends one request. in, when not nil, is sent as JSON; out, when not nil,
 // receives the JSON response.
 func (c *Client) Do(ctx context.Context, method, rawURL string, q url.Values, in, out any) error {
-	if len(q) > 0 {
-		rawURL += "?" + q.Encode()
-	}
-	var body io.Reader
-	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
-			return err
-		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
+	req, err := newRequest(ctx, method, rawURL, q, in)
 	if err != nil {
 		return err
-	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -79,19 +65,44 @@ func (c *Client) Do(ctx context.Context, method, rawURL string, q url.Values, in
 		return err
 	}
 	if resp.StatusCode >= 300 {
-		var e struct {
-			Error struct {
-				Status  string `json:"status"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		_ = json.Unmarshal(data, &e)
-		return &APIError{Code: resp.StatusCode, Status: e.Error.Status, Message: e.Error.Message}
+		return apiError(resp.StatusCode, data)
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)
 	}
 	return nil
+}
+
+func newRequest(ctx context.Context, method, rawURL string, q url.Values, in any) (*http.Request, error) {
+	if len(q) > 0 {
+		rawURL += "?" + q.Encode()
+	}
+	if in == nil {
+		return http.NewRequestWithContext(ctx, method, rawURL, nil)
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
+
+func apiError(status int, data []byte) *APIError {
+	var e struct {
+		Error struct {
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &e); err != nil {
+		e.Error.Message = string(data)
+	}
+	return &APIError{Code: status, Status: e.Error.Status, Message: e.Error.Message}
 }
 
 // List pages through a collection, calling fn for each item of field.

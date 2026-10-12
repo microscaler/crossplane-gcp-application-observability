@@ -42,7 +42,7 @@ func Setup(mgr ctrl.Manager, o tjcontroller.Options) error {
 	opts := []managed.ReconcilerOption{
 		managed.WithExternalConnector(&connector{kube: mgr.GetClient()}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
-		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
+		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))), //nolint:staticcheck // the recorder crossplane-runtime's event package takes
 		managed.WithTimeout(2 * time.Minute),
 		managed.WithPollInterval(o.PollInterval),
 		managed.WithInitializers(),

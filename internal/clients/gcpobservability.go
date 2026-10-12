@@ -17,10 +17,10 @@ import (
 
 const (
 	// error messages
-	errNoProviderConfig     = "no providerConfigRef provided"
-	errGetProviderConfig    = "cannot get referenced ProviderConfig"
-	errTrackUsage           = "cannot track ProviderConfig usage"
-	errExtractCredentials   = "cannot extract credentials"
+	errNoProviderConfig   = "no providerConfigRef provided"
+	errGetProviderConfig  = "cannot get referenced ProviderConfig"
+	errTrackUsage         = "cannot track ProviderConfig usage"
+	errExtractCredentials = "cannot extract credentials"
 )
 
 // TerraformSetupBuilder builds Terraform a terraform.SetupFn function which

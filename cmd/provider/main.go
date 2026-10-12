@@ -45,8 +45,8 @@ import (
 	"github.com/microscaler/crossplane-gcp-application-observability/internal/clients"
 	controllerCluster "github.com/microscaler/crossplane-gcp-application-observability/internal/controller/cluster"
 	controllerNamespaced "github.com/microscaler/crossplane-gcp-application-observability/internal/controller/namespaced"
-	"github.com/microscaler/crossplane-gcp-application-observability/internal/features"
 	controllerNative "github.com/microscaler/crossplane-gcp-application-observability/internal/controller/native"
+	"github.com/microscaler/crossplane-gcp-application-observability/internal/features"
 	"github.com/microscaler/crossplane-gcp-application-observability/internal/version"
 )
 
