@@ -181,16 +181,17 @@ func (e *external) Delete(ctx context.Context, mg xpresource.Managed) (managed.E
 
 func (e *external) Disconnect(_ context.Context) error { return nil }
 
-// sameName compares resource names, ignoring a leading service prefix
-// (//logging.googleapis.com/) the API may add or drop.
+// sameName compares resource names, ignoring the service host prefix the API may add, drop or write without its
+// leading slashes: "//logging.googleapis.com/projects/p/...", "logging.googleapis.com/projects/p/..." and
+// "projects/p/..." are the same name.
 func sameName(a, b string) bool {
-	trim := func(s string) string {
-		if strings.HasPrefix(s, "//") {
-			if i := strings.Index(s[2:], "/"); i >= 0 {
-				return s[2+i+1:]
-			}
-		}
-		return s
+	return trimService(a) == trimService(b)
+}
+
+func trimService(s string) string {
+	s = strings.TrimPrefix(s, "//")
+	if i := strings.Index(s, "/"); i > 0 && strings.HasSuffix(s[:i], ".googleapis.com") {
+		return s[i+1:]
 	}
-	return trim(a) == trim(b)
+	return s
 }
