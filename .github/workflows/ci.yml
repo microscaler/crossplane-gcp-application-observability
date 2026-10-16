@@ -303,3 +303,5 @@ jobs:
         with:
           name: output
           path: _output/**
+          # nothing downloads it; at 365 MiB a build, 90 days of these filled the org artifact quota and broke CI elsewhere
+          retention-days: 1
